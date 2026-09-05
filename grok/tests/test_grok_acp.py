@@ -1,6 +1,6 @@
 """Black-box tests for the stdlib ACP runner; no Grok account or model is used.
 
-Run: python3 -m unittest discover -s grok-cli/tests -v
+Run: python3 -m unittest discover -s grok/tests -v
 """
 
 import json

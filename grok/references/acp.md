@@ -70,10 +70,10 @@ Validation on 2026-09-05:
 Run the portable regression suite from the repository root:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s grok-cli/tests -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s grok/tests -v
 ```
 
-The complete Grok implementation lives in `scripts/grok_acp.py`. Keep this skill self-contained: it must not import from the repository root or from the Codex skill. Run the tests from `grok-cli/tests` after changes.
+The complete Grok implementation lives in `scripts/grok_acp.py`. Keep this skill self-contained: it must not import from the repository root or from the Codex skill. Run the tests from `grok/tests` after changes.
 
 - [xAI headless and ACP documentation](https://docs.x.ai/build/cli/headless-scripting)
 - [ACP tool events and permission responses](https://agentclientprotocol.com/protocol/v1/tool-calls)
