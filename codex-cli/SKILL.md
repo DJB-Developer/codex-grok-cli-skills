@@ -1,131 +1,94 @@
 ---
 name: codex-cli
-description: Run a confirmed, bounded non-interactive task through the user's local Codex CLI, including planning, implementation, investigation, testing, tool use, and review. Use for explicit $codex, codex-cli, or local Codex requests. Do not recursively delegate from Codex unless the user explicitly requests a separate CLI worker.
+description: Delegate a bounded task to the local Codex CLI with live tool status, questions, approvals, cancellation, and exact-session continuation. Use for explicit $codex, codex-cli, or local Codex delegation. From Codex itself, use only for an explicitly requested separate worker, independent review, or CLI-specific reproduction.
 ---
 
 # Codex CLI Delegation
 
-Use the locally installed Codex CLI as a headless external worker while the supervising agent retains responsibility for scope, authorization, verification, and the final report. The CLI process cannot see the current conversation unless the handoff includes the relevant context.
+Use the local Codex CLI as an external worker. The supervising agent supplies context, handles interaction, and verifies the result. This is the shared, host-neutral transport skill; host-specific routers may select it.
 
-This is the shared, host-neutral Codex CLI skill. Host-specific routers may select the worker and mode, but this file owns the direct Codex transport contract.
+The default transport is `scripts/codex_app_server.py`, an attached, private app-server client. It carries native progress and interaction events without launching the TUI or connecting to a shared daemon. `codex exec --json` remains the [direct fallback](references/direct-headless.md) for built-in review, older versions, or requested options outside the bridge.
 
-## Activation
+## Prepare
 
-Activate when the user explicitly invokes `$codex`, asks for `codex-cli` or local Codex, or asks another agent to delegate any bounded non-interactive task to Codex CLI.
-
-When the current runtime is already Codex, complete the task directly by default. Use this skill there only when the user explicitly requests a separate local Codex process, independent review, or CLI-specific reproduction.
-
-When activated, tell the user the worker responsibility, mutability, working directory, and whether this is a new headless run or an exact-session resume.
-
-## Headless capability scope
-
-Headless is the transport, not a reduced worker role. Allow every model-facing capability that the installed `codex exec` exposes and that the task authorizes, including planning, code edits, commands, tests, images, web search, MCP tools, structured output, configured plugins or features, local providers, and configured subagents. Do not maintain a task-type or tool allowlist in this skill.
-
-Use `codex exec --help` and the relevant exec subcommand help as the current syntax source of truth. Preserve explicitly requested model, reasoning, image, schema, search, feature, provider, permission, and session options when they are supported and authorized. Do not disable tools, configured integrations, or subagents merely to simplify supervision.
-
-Multi-turn interaction is a sequence of headless calls: return the first result, then send corrections or follow-up questions through `codex exec resume <session-id>`. The Codex TUI, Desktop launcher, and other human-facing interfaces are outside this skill.
-
-## Preconditions
-
-1. Resolve the exact project directory and read its active `AGENTS.md` instructions.
-2. Confirm `command -v codex`. If the installation has not been verified in the current task, run `codex --version` and the relevant `codex exec ... --help`; installed CLI help is the syntax source of truth.
-3. Inspect branch, HEAD, status, and existing diff. Preserve user changes and keep one writer per worktree.
-4. Create a self-contained handoff outside the repository. Use stdin for long prompts.
-
-The handoff must include the objective, worker responsibility, project path, allowed scope, relevant evidence, existing changes to preserve, forbidden side effects, required verification, acceptance criteria, and requested report. Reviews must return `ACCEPT` or `REVISE` with concrete evidence and the smallest necessary correction.
-
-## Permissions
-
-- Use `--sandbox read-only` for investigation and review.
-- Use `--sandbox workspace-write` for authorized implementation and tests that create build artifacts or caches.
-- Use `--approve-for-me` only when current `codex exec --help` exposes it and the authorized write run must remain unattended.
-- Add `--add-dir` only for explicitly in-scope writable directories.
-
-These are defaults, not capability bans. Honor a different supported sandbox or approval option only when the user explicitly requests it and the environment satisfies its documented safety assumptions. Do not substitute `--dangerously-bypass-approvals-and-sandbox` for a missing safe approval path. Use `--skip-git-repo-check` only for an intentionally non-Git directory. Permission automation does not expand user authorization.
-
-## Direct headless transport
-
-Ensure `/tmp/codex-grok-cli/` exists, create one private run directory with `mktemp -d /tmp/codex-grok-cli/<task-id>.XXXXXX`, retain the exact returned path, and write this invocation's handoff and logs inside it. Do not mix that absolute path with `${TMPDIR}`, which commonly resolves elsewhere on macOS.
+1. Resolve the project directory and active `AGENTS.md`. Inspect branch, HEAD, status, and existing diff; preserve user changes and keep concurrent writers in separate worktrees.
+2. Verify `command -v codex`, `codex --version`, and `codex app-server --help` once per task. The bridge requires Python 3.10+ and Unix sockets (macOS/Linux). For protocol changes, the installed CLI's `app-server generate-json-schema` is the version-specific contract.
+3. Tell the user the worker responsibility, read/write scope, cwd, and new or resumed transport. When already running as Codex, delegate only for the explicit worker/review/reproduction purposes in the description.
+4. Create a private handoff directory outside the repository:
 
 ```bash
-TASK_RUN_DIR="<exact-run-directory-returned-by-mktemp>"
-case "$TASK_RUN_DIR" in
-  /tmp/codex-grok-cli/*) ;;
-  *) echo "invalid task run directory: $TASK_RUN_DIR" >&2; exit 2 ;;
-esac
-HANDOFF="$TASK_RUN_DIR/handoff.md"
-TASK_LOG="$TASK_RUN_DIR/events.jsonl"
-LAST_MSG="$TASK_RUN_DIR/last-message.md"
-TASK_ERR="$TASK_RUN_DIR/stderr.log"
-TASK_EXIT="$TASK_RUN_DIR/exit-status"
-test -f "$HANDOFF" || { echo "handoff missing: $HANDOFF" >&2; exit 2; }
-codex exec \
-  -C "<project-path>" \
-  --sandbox workspace-write \
-  --approve-for-me \
-  --json \
-  --output-last-message "$LAST_MSG" \
-  - < "$HANDOFF" \
-  > "$TASK_LOG" 2> "$TASK_ERR"
-TASK_STATUS=$?
-printf '%s\n' "$TASK_STATUS" > "$TASK_EXIT"
-
-# Return the final worker message to the supervising process and retain files.
-test ! -s "$LAST_MSG" || sed -n '1,$p' "$LAST_MSG"
-test ! -s "$TASK_ERR" || sed -n '1,160p' "$TASK_ERR" >&2
-exit "$TASK_STATUS"
+mkdir -p /tmp/codex-grok-cli
+TASK_HOME="$(mktemp -d /tmp/codex-grok-cli/task.XXXXXX)"
 ```
 
-For `review`, replace `workspace-write` with `read-only` and omit `--approve-for-me`.
+Retain the exact returned path. Write `handoff.md` there, including objective, cwd, scope, known decisions, evidence, changes to preserve, forbidden side effects, tests, and acceptance criteria. Reviews request `ACCEPT` or `REVISE` with concrete evidence. The worker cannot see the parent conversation unless its context is in this handoff.
 
-### Result receipt contract
+## Run
 
-1. Run Codex CLI in the foreground through the host's managed command tool, yielding for at most 30 seconds at a time.
-2. If the command tool returns a live session ID, retain it and poll that same session with empty input until the process exits. Keep the user updated at least every 60 seconds.
-3. Do not use `&`, `nohup`, `disown`, an untracked background shell, or “launch then end the turn.” Do not start a duplicate run after an empty poll.
-4. After exit, inspect `$TASK_EXIT`, `$TASK_ERR`, `$LAST_MSG`, and relevant JSONL failure events. If tool output is truncated, read the saved files in chunks.
-
-Treat the worker response as returned only when the managed process has exited, the recorded exit is `0`, `$LAST_MSG` is non-empty and substantive, and the JSONL has no unresolved `turn.failed` or `error` event. CLI completion is evidence, not final acceptance.
-
-### Artifact lifecycle
-
-Keep the run directory until the managed process has exited and the result-receipt and supervisor verification gates have finished. Then remove that exact run directory when the invocation succeeded and the user did not request retained evidence. Do not use an exit trap: it can delete the handoff or diagnostics before they are inspected.
-
-Before cleanup, verify that the recorded path is a child of `/tmp/codex-grok-cli/` and is not the shared root. Remove only that exact `mktemp` directory:
+Resolve `BRIDGE` to the script beside this installed skill. The bridge creates `--run-dir`; that path must not already exist.
 
 ```bash
-case "$TASK_RUN_DIR" in
-  /tmp/codex-grok-cli/*) rm -R -- "$TASK_RUN_DIR" ;;
-  *) echo "refusing unsafe cleanup: $TASK_RUN_DIR" >&2; exit 2 ;;
-esac
+python3 "$BRIDGE" run \
+  --cwd "<project-path>" \
+  --prompt-file "$TASK_HOME/handoff.md" \
+  --run-dir "$TASK_HOME/run" \
+  --enable-user-input \
+  --sandbox read-only
 ```
 
-Preserve it when execution, JSONL, final-message, substantive-output, or verification checks fail, or when the user requests an audit trail; report the preserved path and reason. A resumed call gets a new run directory even though it reuses the Codex session.
+For authorized implementation or tests requiring artifacts, use `--sandbox workspace-write --approval-reviewer auto_review`. For a workflow in which the supervising agent handles native approvals, use `--approval-reviewer user`. Keep reviews and investigations read-only. Permission automation does not expand the handoff's authority; never substitute unrestricted execution for an approval failure.
 
-## Continuation
+Use `--model` and `--reasoning-effort` only for requested overrides; otherwise retain configured defaults. `--resume <session-id>` continues the exact session and reapplies the invocation's cwd, sandbox, and approval settings. Model and reasoning overrides also apply to resumed turns. Default collaboration mode permits implementation; select `--collaboration-mode plan` for an actual planning task, not merely to make a question tool appear.
 
-Resume an exact session only when responsibility, permissions, repository, and working directory remain unchanged. Use new task-scoped log, stderr, exit, and last-message files:
+`--enable-user-input` enables native question tools for this child process, including default-mode questions on the verified CLI version. It does not change global configuration. Omit it when the user's task explicitly requires the configured feature set unchanged; use final-text questions and exact-session continuation if the tool is unavailable.
+
+Preserve authorized tools, MCP integrations, features, providers, images, structured output, and other explicitly requested capabilities. Use the bridge's `run --help` to check supported options; preserve unsupported options through the direct fallback and disclose its interaction limit instead of silently dropping them.
+
+Start in the foreground through the host's managed command tool and yield within 30 seconds. Retain the returned managed session ID and poll that same process until exit, including while input is pending. An empty poll is not a reason to launch another worker. Use the bridge's `--timeout-seconds` only when a wall-clock limit is intended; it also counts time awaiting input.
+
+## Supervise actual state
+
+Foreground output contains compact tool transitions, plans, requests, heartbeats, and final receipt. Read more detail from the same run:
 
 ```bash
-codex exec resume \
-  --json \
-  --output-last-message "$LAST_MSG" \
-  "<session-id>" \
-  - < "<follow-up-file>" \
-  > "$TASK_LOG" 2> "$TASK_ERR"
+python3 "$BRIDGE" status --run-dir "$TASK_HOME/run"
+python3 "$BRIDGE" events --run-dir "$TASK_HOME/run" --after 0 --limit 20
 ```
 
-Use `--last` only when the most recent session is unambiguous. Start a new session when scope or authority changes. Run continuations through the same managed result-receipt and artifact-lifecycle loop.
+Advance the returned cursor for subsequent event pages. Give meaningful user updates at least every 60 seconds, naming observed commands, tool results, pending questions, or elapsed time since activity. Use compact events and status for ordinary supervision; inspect private protocol logs only for targeted diagnosis.
 
-## Fixed-point review
+Silence does not prove thinking, deadlock, or waiting for approval. `pending_requests` is the actual reply channel. A nonblocking question may remain answerable while the worker continues; distinguish it from a blocking request. Native child-agent items expose only the state the CLI emits. Arbitrary stdin prompts inside commands are not automatically converted into native questions.
 
-Choose one transport before launch:
+## Respond, steer, cancel
 
-- For built-in review instructions, use `codex exec review` with exactly one of `--uncommitted`, `--base <branch>`, or `--commit <sha>`, and no custom prompt.
-- For a custom checklist or required `ACCEPT`/`REVISE`, use ordinary `codex exec --sandbox read-only`; put the fixed point and comparison command in the handoff.
+Read the exact pending request and resolve it from the confirmed handoff or repository evidence when possible. If the user must decide, relay the question in the current host conversation and keep supervising the same run while awaiting the answer. Time elapsed and preselected options are not answers or approvals.
 
-This routing avoids CLI-version-dependent conflicts between review target flags and a custom prompt. A parser exit is a dispatch failure, not a review attempt.
+Read [native interactions](references/app-server.md) before responding: Codex questions use question IDs, and their response schema differs from Grok ACP.
 
-## Verification gate
+```bash
+python3 "$BRIDGE" respond \
+  --run-dir "$TASK_HOME/run" \
+  --request-id "<request-id-from-status>" \
+  --response-file "$TASK_HOME/response.json"
+```
 
-The supervising agent must inspect the resulting status and diff, verify every handoff requirement and authorization boundary, run proportionate checks after the worker stops, identify unrelated changes or unsupported claims, and provide one final report that distinguishes worker output from supervisor verification.
+Expired, duplicate, and cancelled requests are rejected. The runner does not choose answers or grant permission. Unknown protocol requests fail explicitly with their method name.
+
+When the user supplies a correction to a still-active turn, send it through native steering:
+
+```bash
+python3 "$BRIDGE" steer --run-dir "$TASK_HOME/run" --text-file "$TASK_HOME/correction.md"
+python3 "$BRIDGE" cancel --run-dir "$TASK_HOME/run"
+```
+
+Steering adds input to the current turn; it does not answer a pending question or start another turn. Cancellation interrupts only this run; continue polling for its terminal receipt. After a turn finishes, use a new handoff/run directory with the exact session ID to continue. Start a fresh session if the repository, worktree, responsibility, or authority changes.
+
+Question availability depends on the installed CLI and collaboration mode/features. If the worker instead asks in its final text, return that question and use exact-session continuation after the answer. A sentence saying it asked is not evidence of a live protocol request.
+
+## Receive and verify
+
+Receipt requires managed process exit `0`, `status.json` state `succeeded`, `result.json` stop reason `completed`, and substantive final assistant text. `turn/start` acknowledges launch; only `turn/completed` establishes turn completion. Supervisor shutdown of the app-server is separate from that result. Failed tools remain evidence to inspect even if the turn completed.
+
+Independently inspect the resulting diff and scope, verify handoff requirements, and run proportionate checks after the worker stops. Report worker output, supervisor verification, and remaining runtime gaps separately. For read-only reviews, verify the worktree stayed unchanged.
+
+Retain run artifacts through receipt and verification. Preserve failed, cancelled, or audit-requested runs and report their exact path. After successful verification, remove only the invocation's recorded `TASK_HOME` child under `/tmp/codex-grok-cli/`, after checking it is not the shared root. Do not use an exit trap; keep any needed session ID before cleanup.

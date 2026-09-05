@@ -1,187 +1,95 @@
 ---
 name: grok
-description: Run a confirmed, bounded non-interactive task through the user's local Grok CLI, including planning, implementation, investigation, testing, tool use, and review. Use for explicit $grok or Grok CLI requests. Do not use for the interactive TUI or ordinary Grok product questions.
+description: Delegate a bounded task to the local Grok CLI with live tool status, questions, cancellation, and exact-session continuation. Use for explicit $grok or Grok CLI delegation; keep the supervising agent responsible for acceptance.
 ---
 
 # Grok Delegation
 
-Use the locally installed Grok CLI as a headless external worker while Codex remains responsible for scope, supervision, verification, and the final report. The CLI process is not a native subagent and cannot see the current conversation unless the handoff includes it.
+Use Grok as an external headless worker. The supervising agent owns scope, interaction, verification, and the final report. Grok receives only the context supplied in the handoff.
 
-## Activation
+The default transport is the bundled ACP bridge, `scripts/grok_acp.py`. It exposes actual tool events and explicit interaction requests while keeping raw protocol traffic out of the conversation. This is programmatic JSON-RPC, with no Grok TUI or dashboard.
 
-Activate when the user:
+## Prepare the handoff
 
-- invokes `$grok`;
-- explicitly asks Grok to plan, complete, investigate, implement, test, use its available tools, or review a task;
-- asks Codex to hand an already confirmed plan to Grok.
-
-Do not activate merely because a task could benefit from another model.
-
-When activated, tell the user that the `$grok` skill is being used and state the worker responsibility, mutability, working directory, and whether the transport is a new direct headless run, an exact-session resume, or ACP.
-
-## Headless capability scope
-
-Headless is the transport, not a reduced worker role. Allow every model-facing capability that the installed Grok CLI exposes in headless mode and that the task authorizes, including code edits, commands, tests, web and MCP tools, structured output, configured plugins or memory, and Grok-managed subagents. Do not maintain a task-type or tool allowlist in this skill.
-
-Use `grok --help` and the relevant option help as the current syntax source of truth. Preserve explicitly requested model, reasoning, schema, tool, permission, and session options when they are supported and authorized. Do not disable web search, tools, plugins, memory, or subagents merely to simplify supervision.
-
-Default multi-turn interaction in Codex App is a sequence of direct headless calls: return the first result, then send corrections or follow-up questions through `--resume <session-id>`. ACP is an optional headless protocol transport, not a human-facing UI. The Grok TUI, dashboard, and other human-facing interfaces are outside this skill.
-
-## Preconditions
-
-1. Resolve the exact project working directory and read the active `AGENTS.md` instructions.
-2. Confirm the executable with `command -v grok`. When this installation has not been verified in the current task, run `grok --version` and `grok --help`; flags can change between CLI versions. Help output is not exhaustive: Grok 1.0.5 accepts the documented hidden `--no-auto-update` flag without listing it. Probe it with `grok --no-auto-update --version`. Keep the flag when that command exits `0`; omit it only after an explicit unknown/unrecognized-argument error, and record the incompatibility.
-3. Inspect the target worktree's branch, HEAD, status, and existing diff. Preserve user changes. Multiple writers require separate worktrees when the active project rules require isolation.
-4. Convert the relevant context into a self-contained handoff file outside the repository.
-
-The handoff packet must contain:
-
-- objective and worker responsibility;
-- final confirmed plan, if one exists;
-- project path, `write` or `review` mode, and allowed scope;
-- relevant files, symptoms, evidence, and dependencies;
-- constraints, existing user changes to preserve, and forbidden side effects;
-- required tests and acceptance criteria;
-- requested report: changed files, commands, test results, unresolved questions, and remaining risks.
-
-For a review handoff, require `ACCEPT` or `REVISE` with exact evidence and the smallest necessary correction. Review mode must not edit business code.
-
-## Default permission policy: maximum capability
-
-The user has selected maximum capability as the default for local Grok headless delegation. For every direct new or resumed run:
-
-- pass `--always-approve`;
-- do not pass `--permission-mode dontAsk`, `--allow`, or `--deny`;
-- do not pass `--sandbox`; Grok's default sandbox-off behavior is intentional here.
-
-This avoids whole-command allowlist mismatches such as an allowed `git status*` rule silently rejecting `git status && git diff`. `write` and `review` remain responsibility contracts in the handoff, but review is not technically enforced as read-only by the CLI under this policy.
-
-`--always-approve` is the documented `--yolo`/bypass path. Configured deny rules, trusted hooks, or managed requirements can still block calls. If a call is rejected, inspect the effective Grok configuration instead of falling back to `dontAsk` or widening an invocation allowlist.
-
-Maximum capability does not expand the user's authorization. The handoff must still state the exact repository, intended scope, and forbidden external side effects. Under this policy Grok can technically read secrets, write outside the workspace, use the network, delete files, rewrite Git history, push, or deploy, so prompt constraints and the supervising Codex verification gate are advisory governance rather than a security boundary.
-
-## Default transport: direct headless CLI
-
-For a bounded task or implementation of an already confirmed plan, prefer direct headless CLI:
-
-Ensure `/tmp/codex-grok-cli/` exists, create one private run directory with `mktemp -d /tmp/codex-grok-cli/<task-id>.XXXXXX`, retain the exact returned path, and write this invocation's handoff and logs inside it. Use that same absolute path in shell commands and file-writing tools; do not mix it with `${TMPDIR}`, which commonly resolves elsewhere on macOS.
+1. Resolve the project directory and active `AGENTS.md`. Record branch, HEAD, status, and existing diff; preserve user changes and use separate worktrees for concurrent writers.
+2. Check `command -v grok`, `grok --version`, `grok --help`, and `grok --no-auto-update --version` once per task. A missing help entry is not an argument rejection. The bridge requires Python 3 and a local Unix socket (macOS/Linux).
+3. Tell the user that the grok skill is being used, with worker responsibility, `write` or `review` mode, cwd, and new or resumed ACP transport.
+4. Create one private handoff directory outside the repository:
 
 ```bash
-TASK_RUN_DIR="<exact-run-directory-returned-by-mktemp>"
-case "$TASK_RUN_DIR" in
-  /tmp/codex-grok-cli/*) ;;
-  *) echo "invalid task run directory: $TASK_RUN_DIR" >&2; exit 2 ;;
-esac
-HANDOFF="$TASK_RUN_DIR/handoff.md"
-TASK_OUT="$TASK_RUN_DIR/result.json"
-TASK_ERR="$TASK_RUN_DIR/stderr.log"
-TASK_EXIT="$TASK_RUN_DIR/exit-status"
-test -f "$HANDOFF" || { echo "handoff missing: $HANDOFF" >&2; exit 2; }
-grok \
-  --no-auto-update \
+mkdir -p /tmp/codex-grok-cli
+TASK_HOME="$(mktemp -d /tmp/codex-grok-cli/task.XXXXXX)"
+```
+
+Retain the exact returned path. Write `handoff.md` there using that same absolute path; do not substitute macOS `TMPDIR`.
+
+Include objective, confirmed plan, cwd, write/review scope, relevant evidence, existing changes, forbidden side effects, tests, and acceptance criteria. Request changed files, commands, test results, unresolved questions, and risks. A review handoff forbids edits and requests `ACCEPT` or `REVISE` with exact evidence. State decisions already settled so Grok need not ask them again.
+
+## Run and supervise
+
+Resolve `BRIDGE` to `scripts/grok_acp.py` beside this installed `SKILL.md`. The run directory must be a **new** path; the bridge creates it with private permissions.
+
+```bash
+python3 "$BRIDGE" run \
   --cwd "<project-path>" \
-  --always-approve \
-  --max-turns 25 \
-  --output-format json \
-  --prompt-file "$HANDOFF" \
-  > "$TASK_OUT" 2> "$TASK_ERR"
-TASK_STATUS=$?
-printf '%s\n' "$TASK_STATUS" > "$TASK_EXIT"
-
-# Return Grok's captured result to the supervising Codex process as well as
-# retaining it on disk. If tool output is truncated, Codex can reread TASK_OUT.
-test ! -s "$TASK_OUT" || sed -n '1,$p' "$TASK_OUT"
-test ! -s "$TASK_ERR" || sed -n '1,160p' "$TASK_ERR" >&2
-exit "$TASK_STATUS"
+  --prompt-file "$TASK_HOME/handoff.md" \
+  --run-dir "$TASK_HOME/run"
 ```
 
-Default `--output-format json`: current Grok emits one final object containing at least `text`, `stopReason`, and `sessionId`. Do not default to `streaming-json`; it can produce a large ACP event log and requires event reconstruction. Investigation/review default `--max-turns 25`; implementation default `50`.
+Start in the foreground through the host's managed command tool, yielding within 30 seconds. Retain its managed `session_id` and poll it until exit. Keep the runner attached while questions are pending; an untracked background launch cannot deliver reliable completion.
 
-### Result receipt contract
+The bridge starts an isolated `grok agent --always-approve --no-leader stdio` process with auto-update disabled. Existing Grok sessions and shared leaders are not its cleanup targets. Model and reasoning overrides use `--model` and `--reasoning-effort`; otherwise Grok's configured defaults apply. `--resume <session-id>` resumes the exact session from the same cwd and records only the new turn's answer.
 
-The supervising Codex must keep the Grok process attached to a managed terminal session until it exits. This is what makes the final assistant text observable.
+ACP has no implicit model-turn limit. An optional `--timeout-seconds` sets an overall wall-clock limit, including time awaiting input. If a hard model-turn budget is required, use the direct fallback with `--max-turns`; the top-level CLI flag is not forwarded to `agent stdio` in the inspected implementation.
 
-1. Start the command in the foreground with the runtime's managed command tool. Use a yield no longer than 30 seconds.
-2. If the command tool returns a live `session_id`, retain that exact ID and poll it with empty-input `write_stdin` calls, again waiting at most 30 seconds per call. Send the user a brief progress update at least every 60 seconds while continuing to poll.
-3. Do not use `&`, `nohup`, `disown`, an untracked background shell, or “launch then end the turn.” Those processes may be cleaned up, and their eventual file output is not automatically delivered back to Codex.
-4. Do not start a duplicate Grok run merely because a poll has no new output. An empty poll means the final JSON has not been emitted yet.
-5. When the managed process exits, inspect `$TASK_EXIT`, `$TASK_ERR`, and `$TASK_OUT`. The wrapper above echoes captured stdout into the managed tool result; if that result is truncated, read `$TASK_OUT` directly in chunks.
-6. Parse the final object and explicitly extract the worker response:
+The existing maximum-capability policy remains: `--always-approve`, default sandbox behavior, and no invocation tool allowlist. Review mode is a handoff contract, not an enforced sandbox. Permission automation does not expand authorization; preserve scope for secrets, external messages, deletion, history changes, push, deployment, and production access. Configured deny rules, hooks, and managed requirements may still block calls.
+
+For a deliberately supervised approval workflow or a callback test, `--ask-permissions` opts this invocation out of automatic approval. It does not force Grok to ask about operations its policy already permits; keep the default for ordinary delegation.
+
+Use the bridge's `--help` for supported options. If an explicitly requested CLI option is not represented by ACP, preserve it using the [direct CLI fallback](references/direct-headless.md); report the resulting observability limitation instead of silently dropping the option. Headless capabilities, including plugins, MCP, web tools, and Grok-managed subagents, remain available when exposed by the installed CLI and authorized by the task.
+
+### Read actual progress
+
+Foreground output contains compact tool transitions, explicit questions, final receipt, and factual heartbeats. Query the same run when more detail is needed:
 
 ```bash
-jq -e . "$TASK_OUT" >/dev/null
-jq -r '.text // empty' "$TASK_OUT"
-jq -r '[.sessionId // "", .stopReason // ""] | @tsv' "$TASK_OUT"
+python3 "$BRIDGE" status --run-dir "$TASK_HOME/run"
+python3 "$BRIDGE" events --run-dir "$TASK_HOME/run" --after 0 --limit 20
 ```
 
-Treat the delegation as successfully returned only when the managed terminal has finished, the recorded exit is `0`, the JSON parses, `.stopReason == "end_turn"`, and `.text` is non-empty and substantive. The `.text` field is Grok's answer; use it to supervise the task and report to the user rather than merely saying that Grok was started. Preserve the files when any check fails, diagnose the concrete failure, and resume or retry only with a specific correction.
+Advance the returned event cursor when fetching the next page. Use status and compact events for supervision; raw `protocol.jsonl` is for targeted diagnosis, not whole-file context ingestion. Give the user a meaningful update at least every 60 seconds, naming the current tool, its result, or the last observed activity.
 
-Investigation and review use the same maximum-capability command. Mark them `review` in the handoff, explicitly forbid edits and side effects, and verify the worktree remained unchanged afterward.
+`pending` tool status alone is not a request for approval. A quiet interval is only time since the last event, not proof of thinking, deadlock, or waiting for input. The bridge reports tool calls and subagent sessions that Grok actually emits; it cannot infer hidden subprocess progress or turn arbitrary stdin prompts into ACP requests.
 
-For short prompts, `-p "<prompt>"` may replace `--prompt-file`. Prefer a prompt file for long plans so quoting and truncation do not corrupt the handoff.
+### Answer an explicit request
 
-Use `--no-auto-update` for scripted headless runs so background update checks cannot interfere. Capture stdout JSON and stderr in separate task-scoped files. Exit code `0` only means the CLI process exited normally: also inspect `stopReason` (`end_turn` is success). A missing `stopReason`, `cancelled`, or an unhandled failed tool call means the delegated task failed even when the process returned `0`.
+When status reports a pending interaction, read its request ID and full parameters. Answer from the confirmed plan or repository evidence when possible. If a user decision is required, present that question and keep supervising the same managed process while awaiting the answer. Elapsed time never constitutes an answer.
 
-### Artifact lifecycle
-
-Keep the run directory until the managed process has exited and the result-receipt and Codex verification gates have finished. Then remove that exact run directory when the invocation succeeded and the user did not request retained evidence. Do not use an exit trap: it can delete stdout, stderr, or the handoff before the supervisor diagnoses the result.
-
-Before cleanup, verify that the recorded path is a child of `/tmp/codex-grok-cli/` and is not the shared root. Remove only that exact `mktemp` directory:
+Write the response as JSON outside the repository, then submit it to that exact request:
 
 ```bash
-case "$TASK_RUN_DIR" in
-  /tmp/codex-grok-cli/*) rm -R -- "$TASK_RUN_DIR" ;;
-  *) echo "refusing unsafe cleanup: $TASK_RUN_DIR" >&2; exit 2 ;;
-esac
+python3 "$BRIDGE" respond \
+  --run-dir "$TASK_HOME/run" \
+  --request-id "<request-id-from-status>" \
+  --response-file "$TASK_HOME/response.json"
 ```
 
-Preserve it when execution, parsing, `stopReason`, substantive-output, or verification checks fail, or when the user requests an audit trail; report the preserved path and reason. A resumed call gets a new run directory even though it reuses the Grok session.
+Permission responses use `{"optionId":"<an-option-id-from-the-request>"}`. Grok question responses use its question/answer schema. Read [ACP interactions and evidence](references/acp.md) for the exact shapes and protocol limits before answering a question. Unknown requests fail explicitly; they are never silently approved. Expired, duplicate, or cancelled requests must not be answered.
 
-## Continuation
+Some Grok toolsets do not expose the native question tool. If Grok asks a question in its final text instead, answer through an exact-session continuation after receipt. A model's statement that it asked is not evidence of a pending RPC; inspect the actual requests.
 
-Direct headless sessions support ordinary multi-turn correction. Resume the recorded session from the same working directory and repeat the maximum-capability flags:
+### Cancel or continue
 
 ```bash
-grok \
-  --no-auto-update \
-  --cwd "<project-path>" \
-  --resume "<session-id>" \
-  --always-approve \
-  --max-turns 25 \
-  --output-format json \
-  --prompt-file "<follow-up-file>"
+python3 "$BRIDGE" cancel --run-dir "$TASK_HOME/run"
 ```
 
-Run continuations through the same managed-session, result-receipt, and artifact-lifecycle loop. Use `--continue` only when selecting the most recent session for that directory is unambiguous. Start a new session when responsibility, permissions, repository, or worktree changes.
+Cancellation targets only this run. Continue polling for its terminal state. If a cancelled or failed turn needs correction, create a new handoff/run directory and use `run --resume <session-id>` from the original cwd. Start a fresh Grok session if responsibility, repository, or worktree changes. A resumed call is separate from answering a request in a still-running turn.
 
-## Optional headless protocol: ACP
+## Receive and verify
 
-ACP is programmatic JSON-RPC over stdin/stdout, not a terminal UI. Keep direct headless JSON as the default. Use ACP only when the user explicitly requests it or an integration needs a long-lived session, streamed agent events, or protocol-level control and the current runtime has a working ACP client.
+Read `result.json` (`text`, `sessionId`, `stopReason`), `status.json`, and relevant stderr after the managed process exits. Receipt succeeds only with bridge exit `0`, `stopReason=end_turn`, and substantive nonempty text. An ACP server stays alive after a turn; its supervisor-initiated shutdown is distinct from turn completion. Cancellation, protocol errors, premature process exit, and exhausted turns are not success.
 
-```bash
-grok --no-auto-update --always-approve agent stdio
-```
+Receipt is not task acceptance. Inspect the diff, check scope and confirmed plan, run proportionate tests, and review any failed tools or unsupported claims. Ask Grok to correct concrete defects or make a minimal supervising-agent patch. Report Grok's work, independent verification, and remaining gaps separately. For review tasks, verify that the worktree stayed unchanged.
 
-The client must initialize and authenticate, create or load the session, send `session/prompt`, consume `session/update`, concatenate `content.text` from `agent_message_chunk` updates, check the returned `stopReason`, and own process termination. The `session/prompt` response is completion metadata; it is not the assistant body.
-
-When no working ACP client is available, use direct headless JSON plus exact-session `--resume`. Do not substitute the Grok TUI or hand-written terminal interaction for a missing protocol client.
-
-## Execution rules
-
-- Set the intended project with `--cwd` and keep the operational scope explicit in the handoff. Under the selected maximum-capability policy, `--cwd` is context rather than a filesystem boundary.
-- Permission automation does not expand authorization. Keep unrelated deletion, history rewriting, secrets, external messages, push, deploy, and production changes outside the handoff unless the user explicitly authorized them.
-- Use direct headless, exact-session resume, or ACP with a real client; keep human-facing Grok interfaces out of the Codex App delegation path.
-- Keep one writer per worktree. Stop the writer before an independent test or review process operates on that worktree when project rules require it.
-- If Grok asks a question that can be answered from the confirmed plan or repository evidence, answer it without interrupting the user. Ask the user only when the missing choice would materially change scope or outcome.
-- If Grok fails, preserve its output, diagnose the failure, and retry only with a concrete correction.
-
-## Codex verification gate
-
-Grok completing the process is not the final acceptance signal. Codex must:
-
-1. inspect the resulting diff and changed files;
-2. check that every confirmed plan item was addressed;
-3. run focused tests or other proportionate verification;
-4. identify unrelated changes, regressions, skipped tests, or unsupported claims;
-5. ask Grok to correct issues or make a minimal Codex patch when appropriate;
-6. provide one consolidated final report distinguishing Grok's work, Codex verification, test results, and remaining risks.
+Retain artifacts through receipt and verification. Preserve failed, cancelled, or audit-requested runs and report their path. After a successful verified run, remove only that invocation's exact `TASK_HOME` child under `/tmp/codex-grok-cli/`, with a path check; never delete the shared root or use an exit trap. Keep any session ID needed for continuation before cleanup.
