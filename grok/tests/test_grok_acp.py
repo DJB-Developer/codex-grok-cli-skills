@@ -261,6 +261,21 @@ class BridgeIntegrationTests(unittest.TestCase):
         response = next(m for m in self.messages() if m.get("id") == 711 and "error" in m)
         self.assertEqual(response["error"]["code"], -32601)
 
+    def test_internal_skills_reload_receipt_does_not_end_turn(self):
+        proc = self.start("skills_reload")
+        result, _, _ = self.finish(proc)
+        self.assertEqual(result["text"], "Reload survived.")
+        self.assertEqual(result["stopReason"], "end_turn")
+        events = self.command("events", "--after", "0", "--limit", "100")
+        self.assertIn("internal_response", json.dumps(events))
+
+    def test_unknown_duplicate_and_invalid_reload_responses_fail(self):
+        for scenario in ("unknown_response", "duplicate_response", "invalid_reload"):
+            with self.subTest(scenario=scenario):
+                self.run_dir = self.base / scenario.split("_")[0]
+                result, _, _ = self.finish(self.start(scenario), expected=1)
+                self.assertIn("unknown or duplicate response ID", result["error"])
+
     def test_incomplete_or_invalid_runs_never_report_success(self):
         for scenario in ("malformed", "early_eof", "non_end_turn", "empty_result"):
             with self.subTest(scenario=scenario):

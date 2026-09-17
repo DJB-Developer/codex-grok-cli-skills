@@ -56,6 +56,16 @@ The run directory keeps `protocol.jsonl` (inbound events with credential redacti
 
 The shared supervisor also records `cleanupComplete` and `cleanupWarnings` in the result. If the owned process group cannot be confirmed stopped, the final receipt fails while preserving the turn's text and native stop reason for diagnosis.
 
+## Internal skills reload receipt
+
+A retained Grok 1.0.30 failure emitted `{"jsonrpc":"2.0","id":"skills-reload","result":{"result":{"reloaded":1}}}` during an active prompt. This is an unsolicited internal receipt, not a response to the bridge's integer RPC IDs. Older bridges aborted with `Grok returned an unknown or duplicate response ID`.
+
+The bridge records this specific successful receipt as `internal_response` and continues waiting for the real `session/prompt` result. It requires a nonnegative integer `result.result.reloaded` and no error field. Other unknown IDs, duplicate responses, and malformed reload receipts still fail with retained evidence. This is a compatibility workaround observed in the installed CLI, not an ACP standard message or a completion signal.
+
+For that error, inspect the last response ID in `protocol.jsonl` and check that the installed `scripts/grok_acp.py` includes this handler. Preserve the failed run. Before continuing a failed write task, inspect its diff and side effects; resume its exact session with a new run directory only after establishing what already happened. A read-only review can be rerun with its original scope. The failed review remains unaccepted until the replacement finishes and is independently verified.
+
+2026-09-17 verification: the recorded reload frame reproduces the failure with the old bridge and passes with the fix. All 24 portable regression tests passed. Grok 1.0.34 completed a live minimal ACP request and an exact-session continuation using the updated installed bridge; neither emitted the reload frame, so live startup/completion and the deterministic reload regression are separate evidence.
+
 ## Sources and compatibility
 
 The installed CLI was Grok `1.0.13` (`5e9a58528b76`) during development. Its `initialize` response negotiated ACP v1, `loadSession`, and `cached_token`. Public source commit `72a61251fcffb464bcc687aeb5a998e5a98ec0c9` established extension shapes; it is **not** the installed binary's source revision. Live smoke tests and fake-peer protocol tests are separate evidence tiers.

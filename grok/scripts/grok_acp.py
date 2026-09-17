@@ -284,6 +284,9 @@ class BaseBridge:
                 elif "id" in message:
                     waiter = self.waiters.get(message["id"])
                     if not waiter:
+                        if self.internal_response(message):
+                            self.save()
+                            continue
                         raise RuntimeError(self.agent_name + " returned an unknown or duplicate response ID")
                     method, future = waiter
                     if future.done():
@@ -557,6 +560,9 @@ class BaseBridge:
     def response_received(self, method, result):
         pass
 
+    def internal_response(self, message):
+        return False
+
     async def conversation(self):
         raise NotImplementedError
 
@@ -699,6 +705,19 @@ PLAN_METHODS = {"x.ai/exit_plan_mode", "_x.ai/exit_plan_mode"}
 
 class Bridge(BaseBridge):
     agent_name = "Grok"
+
+    def internal_response(self, message):
+        # Grok 1.0.30 can leak its file watcher's internal reload receipt to ACP.
+        # Our RPC IDs are integers; this exact successful receipt owns no waiter.
+        if message.get("id") != "skills-reload" or "error" in message:
+            return False
+        result = message.get("result")
+        nested = result.get("result") if isinstance(result, dict) else None
+        reloaded = nested.get("reloaded") if isinstance(nested, dict) else None
+        if type(reloaded) is not int or reloaded < 0:
+            return False
+        self.event("internal_response", response_id="skills-reload", reloaded=reloaded)
+        return True
 
     def command(self):
         command = [self.args.grok_bin, "--no-auto-update", "agent", "--no-leader"]

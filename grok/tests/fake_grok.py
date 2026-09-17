@@ -46,6 +46,15 @@ def start_prompt(message):
     global prompt_id, scenario, pending_id
     prompt_id = message["id"]
     scenario = message["params"]["prompt"][0]["text"].strip()
+    if scenario == "skills_reload":
+        result("skills-reload", {"result": {"reloaded": 1}})
+        finish("Reload survived.")
+        return
+    if scenario in {"unknown_response", "duplicate_response", "invalid_reload"}:
+        response_id = {"unknown_response": "unexpected", "duplicate_response": 1,
+                       "invalid_reload": "skills-reload"}[scenario]
+        result(response_id, {})
+        return
     if scenario == "malformed":
         print("{not-valid-json", flush=True)
         return

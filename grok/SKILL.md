@@ -88,7 +88,7 @@ Cancellation targets only this run. Continue polling for its terminal state. If 
 
 ## Receive and verify
 
-Read `result.json` (`text`, `sessionId`, `stopReason`), `status.json`, and relevant stderr after the managed process exits. Receipt succeeds only with bridge exit `0`, `stopReason=end_turn`, and substantive nonempty text. An ACP server stays alive after a turn; its supervisor-initiated shutdown is distinct from turn completion. Cancellation, protocol errors, premature process exit, and exhausted turns are not success.
+Read `result.json` (`text`, `sessionId`, `stopReason`), `status.json`, and relevant stderr after the managed process exits. Receipt succeeds only with bridge exit `0`, `stopReason=end_turn`, and substantive nonempty text. An ACP server stays alive after a turn; its supervisor-initiated shutdown is distinct from turn completion. Cancellation, protocol errors, premature process exit, and exhausted turns are not success. If the bridge reports a protocol error, inspect the failing frame using [ACP interactions and evidence](references/acp.md) before retrying. A successful internal `skills-reload` receipt is logged separately and never counts as turn completion; use the updated bundled bridge to handle it.
 
 Receipt is not task acceptance. Inspect the diff, check scope and confirmed plan, run proportionate tests, and review any failed tools or unsupported claims. Ask Grok to correct concrete defects or make a minimal supervising-agent patch. Report Grok's work, independent verification, and remaining gaps separately. For review tasks, verify that the worktree stayed unchanged.
 
