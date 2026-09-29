@@ -907,7 +907,8 @@ class Bridge(BaseBridge):
         self.event("initialized", agent_info=initialized.get("agentInfo"),
                    agent_capabilities=initialized.get("agentCapabilities", {}))
         methods = {m.get("id") for m in initialized.get("authMethods", [])}
-        auth = self.args.auth_method or ("xai.api_key" if os.environ.get("XAI_API_KEY") and
+        api_key_configured = bool(os.environ.get("XAI_API_KEY") or os.environ.get("GROK_CODE_XAI_API_KEY"))
+        auth = self.args.auth_method or ("xai.api_key" if api_key_configured and
                                           "xai.api_key" in methods else "cached_token")
         if auth not in methods:
             raise RuntimeError("Grok does not advertise the selected authentication method: " + auth)

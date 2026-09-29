@@ -168,9 +168,10 @@ for line in sys.stdin:
                 "code": -32602, "message": "Fixture rejects unimplemented client capabilities",
             }})
         else:
+            advertised = [item for item in os.environ.get("FAKE_GROK_AUTH_METHODS", "cached_token").split(",") if item]
             result(message["id"], {"protocolVersion": 1,
                                    "agentCapabilities": {"loadSession": True},
-                                   "authMethods": [{"id": "cached_token", "name": "Cached token"}]})
+                                   "authMethods": [{"id": item, "name": item} for item in advertised]})
     elif method == "authenticate":
         result(message["id"], {})
     elif method == "session/load":

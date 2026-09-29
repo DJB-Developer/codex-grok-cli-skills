@@ -85,7 +85,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s grok/tests -v
 
 The complete Grok implementation lives in `scripts/grok_acp.py`. Keep this skill self-contained: it must not import from the repository root or from the Codex skill. Run the tests from `grok/tests` after changes.
 
+2026-09-29: Grok `1.0.41` help text matches the bridge command `grok --no-auto-update agent --no-leader [--always-approve] [--model] [--reasoning-effort] stdio`. `grok agent` rejects `--max-turns`, `--permission-mode`, `--sandbox`, `--tools`, `--disallowed-tools`, and `--prompt-file`. Root `--max-turns` remains headless-only. The public headless table's `-s` "create or resume" wording disagrees with `grok --help` and the Sessions page; exact continuation stays on the recorded UUID. The binary still accepts `GROK_CODE_XAI_API_KEY` as a legacy alias of `XAI_API_KEY`, and it reports managed always-approve locks with `always-approve disabled by managed policy`. The portable suite passed with 26 tests, including legacy `GROK_CODE_XAI_API_KEY` method selection. This pass did not repeat the live model smoke; the 1.0.34 ACP result above remains the last live protocol evidence.
+
+- [Grok Build overview](https://docs.x.ai/build/overview)
 - [xAI headless and ACP documentation](https://docs.x.ai/build/cli/headless-scripting)
+- [CLI reference](https://docs.x.ai/build/cli/reference)
+- [Sessions](https://docs.x.ai/build/features/sessions)
+- [Enterprise permissions and API-key auth](https://docs.x.ai/build/enterprise)
 - [ACP tool events and permission responses](https://agentclientprotocol.com/protocol/v1/tool-calls)
 - [Grok question request and response types](https://github.com/xai-org/grok-build/blob/72a61251fcffb464bcc687aeb5a998e5a98ec0c9/crates/codegen/xai-grok-tools/src/implementations/grok_build/ask_user_question/types.rs)
 - [Grok plan approval types](https://github.com/xai-org/grok-build/blob/72a61251fcffb464bcc687aeb5a998e5a98ec0c9/crates/codegen/xai-grok-tools/src/implementations/grok_build/exit_plan_mode/types.rs)

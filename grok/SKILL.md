@@ -7,12 +7,12 @@ description: Delegate a bounded task to the local Grok CLI with live tool status
 
 Use Grok as an external headless worker. The supervising agent owns scope, interaction, verification, and the final report. Grok receives only the context supplied in the handoff.
 
-The default transport is the bundled ACP bridge, `scripts/grok_acp.py`. It exposes actual tool events and explicit interaction requests while keeping raw protocol traffic out of the conversation. This is programmatic JSON-RPC, with no Grok TUI or dashboard.
+The default transport is the bundled ACP bridge, `scripts/grok_acp.py`. It exposes actual tool events and explicit interaction requests while keeping raw protocol traffic out of the conversation. This is programmatic JSON-RPC, with no Grok TUI or dashboard. This skill stays on `grok agent stdio`; `grok agent headless` and `grok agent serve` are separate transports.
 
 ## Prepare the handoff
 
 1. Resolve the project directory and active `AGENTS.md`. Record branch, HEAD, status, and existing diff; preserve user changes and use separate worktrees for concurrent writers.
-2. Check `command -v grok`, `grok --version`, `grok --help`, and `grok --no-auto-update --version` once per task. A missing help entry is not an argument rejection. The bridge requires Python 3 and a local Unix socket (macOS/Linux).
+2. Check `command -v grok`, `grok --version`, `grok --help`, and `grok --no-auto-update --version` once per task. A missing help entry is not an argument rejection. Authentication is an existing `grok login` (`grok login --device-auth` when no browser is available) or `XAI_API_KEY`. The CLI still accepts the legacy name `GROK_CODE_XAI_API_KEY`. The bridge requires Python 3 and a local Unix socket (macOS/Linux).
 3. Tell the user that the grok skill is being used, with worker responsibility, `write` or `review` mode, cwd, and new or resumed ACP transport.
 4. Create one private handoff directory outside the repository:
 
@@ -38,11 +38,13 @@ python3 "$BRIDGE" run \
 
 Start in the foreground through the host's managed command tool, yielding within 30 seconds. Retain its managed `session_id` and poll it until exit. Keep the runner attached while questions are pending; an untracked background launch cannot deliver reliable completion.
 
-The bridge starts an isolated `grok agent --always-approve --no-leader stdio` process with auto-update disabled. Existing Grok sessions and shared leaders are not its cleanup targets. Model and reasoning overrides use `--model` and `--reasoning-effort`; otherwise Grok's configured defaults apply. `--resume <session-id>` resumes the exact session from the same cwd and records only the new turn's answer.
+The bridge starts an isolated `grok agent --always-approve --no-leader stdio` process with auto-update disabled. Existing Grok sessions and shared leaders are not its cleanup targets. Model and reasoning overrides use `--model` and `--reasoning-effort`; otherwise Grok's configured defaults apply. It selects ACP auth method `xai.api_key` when `XAI_API_KEY` or `GROK_CODE_XAI_API_KEY` is set and Grok advertises that method; otherwise it uses `cached_token`. `--auth-method` overrides that choice.
 
-ACP has no implicit model-turn limit. An optional `--timeout-seconds` sets an overall wall-clock limit, including time awaiting input. If a hard model-turn budget is required, use the direct fallback with `--max-turns`; the top-level CLI flag is not forwarded to `agent stdio` in the inspected implementation.
+Bridge `--resume <session-id>` and direct `grok --resume <session-id>` continue that exact session from the same cwd and keep only the new turn's answer. Use the UUID recorded in `result.json`. Keep that same id: `-s/--session-id` creates a new UUID, `--fork-session` assigns a new id, and `--restore-code` checks out the session's file snapshot. The [direct CLI fallback](references/direct-headless.md) has the headless spellings.
 
-The existing maximum-capability policy remains: `--always-approve`, default sandbox behavior, and no invocation tool allowlist. Review mode is a handoff contract, not an enforced sandbox. Permission automation does not expand authorization; preserve scope for secrets, external messages, deletion, history changes, push, deployment, and production access. Configured deny rules, hooks, and managed requirements may still block calls.
+ACP has no implicit model-turn limit. An optional `--timeout-seconds` sets an overall wall-clock limit, including time awaiting input. `--max-turns` is headless-only. `grok agent` and `grok agent stdio` reject it, so a hard turn budget uses the direct fallback.
+
+The maximum-capability policy remains: `--always-approve` (CLI alias `--yolo`), the configured sandbox (built-in default `off`), and no invocation tool allowlist. Review mode is a handoff contract, not an enforced sandbox. Permission automation does not expand authorization; preserve scope for secrets, external messages, deletion, history changes, push, deployment, and production access. Deny rules, hooks, and managed requirements can still block calls. If Grok reports that always-approve is disabled by managed policy (`disable_bypass_permissions_mode` or `yolo = false` in `requirements.toml`), stop and report that lock, then wait for the user to choose the next mode. User-requested `--permission-mode`, `--sandbox`, `--max-turns`, `--tools`, and `--disallowed-tools` are direct-fallback flags: `grok agent` rejects them.
 
 For a deliberately supervised approval workflow or a callback test, `--ask-permissions` opts this invocation out of automatic approval. It does not force Grok to ask about operations its policy already permits; keep the default for ordinary delegation.
 

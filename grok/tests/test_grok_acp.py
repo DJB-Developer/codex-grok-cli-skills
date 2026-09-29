@@ -65,11 +65,16 @@ class BridgeIntegrationTests(unittest.TestCase):
                     pass
         self.tmp.cleanup()
 
-    def start(self, scenario, run_dir=None, extra_args=()):
+    def start(self, scenario, run_dir=None, extra_args=(), env_overlay=None):
         target = run_dir or self.run_dir
         prompt = self.base / f"prompt-{len(self.processes)}.txt"
         prompt.write_text(scenario, encoding="utf-8")
         env = dict(os.environ, FAKE_GROK_TRACE=str(self.trace))
+        for key, value in (env_overlay or {}).items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
         proc = subprocess.Popen(
             [sys.executable, str(BRIDGE), "run", "--cwd", str(self.base),
              "--prompt-file", str(prompt), "--run-dir", str(target),
@@ -221,6 +226,31 @@ class BridgeIntegrationTests(unittest.TestCase):
         self.assertFalse(self.tool(self.status(), "historical-tool"))
         loaded = next(m for m in self.messages() if m.get("method") == "session/load")
         self.assertIs(loaded["params"]["_meta"]["askUserQuestion"], True)
+
+    def test_legacy_api_key_env_selects_advertised_api_key_method(self):
+        self.run_dir = self.base / "legacy-auth"
+        self.trace = self.base / "legacy-auth-trace.jsonl"
+        proc = self.start("success", env_overlay={
+            "XAI_API_KEY": None,
+            "GROK_CODE_XAI_API_KEY": "legacy-test-key",
+            "FAKE_GROK_AUTH_METHODS": "cached_token,xai.api_key",
+        })
+        self.finish(proc)
+        auth = next(message for message in self.messages() if message.get("method") == "authenticate")
+        self.assertEqual(auth["params"]["methodId"], "xai.api_key")
+        self.assertNotIn("legacy-test-key", json.dumps(self.messages()))
+
+    def test_missing_api_key_keeps_cached_token_when_both_methods_exist(self):
+        self.run_dir = self.base / "cached-auth"
+        self.trace = self.base / "cached-auth-trace.jsonl"
+        proc = self.start("success", env_overlay={
+            "XAI_API_KEY": None,
+            "GROK_CODE_XAI_API_KEY": None,
+            "FAKE_GROK_AUTH_METHODS": "cached_token,xai.api_key",
+        })
+        self.finish(proc)
+        auth = next(message for message in self.messages() if message.get("method") == "authenticate")
+        self.assertEqual(auth["params"]["methodId"], "cached_token")
 
     def test_model_and_effort_are_applied_before_new_and_resumed_prompts(self):
         for name, extra, expected_model in (
