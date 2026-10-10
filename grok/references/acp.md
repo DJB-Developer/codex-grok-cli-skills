@@ -68,6 +68,16 @@ For that error, inspect the last response ID in `protocol.jsonl` and check that 
 
 ## Sources and compatibility
 
+### Current validation: 2026-10-11
+
+- Grok `1.0.50` (`c58f321264ba`); `grok --no-auto-update update --check` reported `latest: 1.0.50` on the stable channel. Root, agent, and stdio help and the official headless/CLI pages were rechecked. The existing bridge requires no protocol change for this version.
+- All 26 portable tests passed. The six headless-only flags listed in the 1.0.41 notes below still produce argument rejection (exit 2) under `grok agent`.
+- Live ACP negotiated v1, read a temporary marker through `read_file`, emitted completed tool status, and returned `end_turn`, exit 0, and confirmed cleanup. Multiple real `skills-reload` receipts were handled without interrupting the turn, extending the earlier fake-peer-only coverage of that workaround.
+- Exact-UUID continuation recalled the marker and returned only the new turn's text, with exit 0 and confirmed cleanup. Direct headless `--output-format json --max-turns 1` returned the expected text, session UUID, and `stopReason=end_turn` with process exit 0.
+- ACP `text` concatenates this turn's `agent_message_chunk` messages, including any model progress prose before its answer. The file-read smoke included such prose; consumers must not assume a final-answer-only field or exact structured output. Use the direct JSON-schema path when structured content is required.
+- Model defaults were preserved. Native question/plan callbacks and supervised permission replies were not repeated live in this refresh; their deterministic tests passed. This validates transport compatibility, not an independent review of another project.
+
+
 The installed CLI was Grok `1.0.13` (`5e9a58528b76`) during development. Its `initialize` response negotiated ACP v1, `loadSession`, and `cached_token`. Public source commit `72a61251fcffb464bcc687aeb5a998e5a98ec0c9` established extension shapes; it is **not** the installed binary's source revision. Live smoke tests and fake-peer protocol tests are separate evidence tiers.
 
 Validation on 2026-09-05:
@@ -85,7 +95,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s grok/tests -v
 
 The complete Grok implementation lives in `scripts/grok_acp.py`. Keep this skill self-contained: it must not import from the repository root or from the Codex skill. Run the tests from `grok/tests` after changes.
 
-2026-09-29: Grok `1.0.41` help text matches the bridge command `grok --no-auto-update agent --no-leader [--always-approve] [--model] [--reasoning-effort] stdio`. `grok agent` rejects `--max-turns`, `--permission-mode`, `--sandbox`, `--tools`, `--disallowed-tools`, and `--prompt-file`. Root `--max-turns` remains headless-only. The public headless table's `-s` "create or resume" wording disagrees with `grok --help` and the Sessions page; exact continuation stays on the recorded UUID. The binary still accepts `GROK_CODE_XAI_API_KEY` as a legacy alias of `XAI_API_KEY`, and it reports managed always-approve locks with `always-approve disabled by managed policy`. The portable suite passed with 26 tests, including legacy `GROK_CODE_XAI_API_KEY` method selection. This pass did not repeat the live model smoke; the 1.0.34 ACP result above remains the last live protocol evidence.
+2026-09-29: Grok `1.0.41` help text matches the bridge command `grok --no-auto-update agent --no-leader [--always-approve] [--model] [--reasoning-effort] stdio`. `grok agent` rejects `--max-turns`, `--permission-mode`, `--sandbox`, `--tools`, `--disallowed-tools`, and `--prompt-file`. Root `--max-turns` remains headless-only. The public headless table's `-s` "create or resume" wording disagrees with `grok --help` and the Sessions page; exact continuation stays on the recorded UUID. The binary still accepts `GROK_CODE_XAI_API_KEY` as a legacy alias of `XAI_API_KEY`, and it reports managed always-approve locks with `always-approve disabled by managed policy`. The portable suite passed with 26 tests, including legacy `GROK_CODE_XAI_API_KEY` method selection. This pass did not repeat the live model smoke; the 1.0.34 ACP result above was the last live protocol evidence at that time.
 
 - [Grok Build overview](https://docs.x.ai/build/overview)
 - [xAI headless and ACP documentation](https://docs.x.ai/build/cli/headless-scripting)

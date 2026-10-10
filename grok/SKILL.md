@@ -9,10 +9,12 @@ Use Grok as an external headless worker. The supervising agent owns scope, inter
 
 The default transport is the bundled ACP bridge, `scripts/grok_acp.py`. It exposes actual tool events and explicit interaction requests while keeping raw protocol traffic out of the conversation. This is programmatic JSON-RPC, with no Grok TUI or dashboard. This skill stays on `grok agent stdio`; `grok agent headless` and `grok agent serve` are separate transports.
 
+Validated with Grok `1.0.50`; see [compatibility evidence](references/acp.md#sources-and-compatibility) for the live checks and remaining limits.
+
 ## Prepare the handoff
 
 1. Resolve the project directory and active `AGENTS.md`. Record branch, HEAD, status, and existing diff; preserve user changes and use separate worktrees for concurrent writers.
-2. Check `command -v grok`, `grok --version`, `grok --help`, and `grok --no-auto-update --version` once per task. A missing help entry is not an argument rejection. Authentication is an existing `grok login` (`grok login --device-auth` when no browser is available) or `XAI_API_KEY`. The CLI still accepts the legacy name `GROK_CODE_XAI_API_KEY`. The bridge requires Python 3 and a local Unix socket (macOS/Linux).
+2. Check `command -v grok`, `grok --no-auto-update --version`, `grok --no-auto-update --help`, and `grok --no-auto-update agent --help` once per task. For an explicit version refresh, use `grok --no-auto-update update --check` to distinguish the installed version from the latest release in its configured channel. A missing help entry is not an argument rejection. Authentication is an existing `grok login` (`grok login --device-auth` when no browser is available) or `XAI_API_KEY`. The CLI still accepts the legacy name `GROK_CODE_XAI_API_KEY`. The bridge requires Python 3 and a local Unix socket (macOS/Linux).
 3. Tell the user that the grok skill is being used, with worker responsibility, `write` or `review` mode, cwd, and new or resumed ACP transport.
 4. Create one private handoff directory outside the repository:
 
