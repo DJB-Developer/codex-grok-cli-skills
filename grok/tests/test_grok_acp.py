@@ -136,6 +136,7 @@ class BridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(result["sessionId"], "fixture-session")
         initialize = next(m for m in self.messages() if m.get("method") == "initialize")
         self.assertEqual(initialize["params"]["clientCapabilities"], {})
+        self.assertEqual(initialize["params"]["clientInfo"]["name"], "grok-acp-bridge")
         created = next(m for m in self.messages() if m.get("method") == "session/new")
         self.assertIs(created["params"]["_meta"]["askUserQuestion"], True)
         self.assertFalse(any(m.get("method", "").startswith(("fs/", "terminal/")) for m in self.messages()))
@@ -219,11 +220,26 @@ class BridgeIntegrationTests(unittest.TestCase):
         response = next(m for m in self.messages() if m.get("id") == 703 and "result" in m)
         self.assertEqual(response["result"], {"outcome": "approved"})
 
-    def test_resume_history_does_not_pollute_current_answer_or_tools(self):
+    def test_resume_uses_session_resume_when_advertised(self):
         proc = self.start("success", extra_args=("--resume", "fixture-session"))
         result, _, _ = self.finish(proc)
         self.assertEqual(result["text"], "你好，ACP。")
         self.assertFalse(self.tool(self.status(), "historical-tool"))
+        methods = [m.get("method") for m in self.messages()]
+        self.assertIn("session/resume", methods)
+        self.assertNotIn("session/load", methods)
+        resumed = next(m for m in self.messages() if m.get("method") == "session/resume")
+        self.assertIs(resumed["params"]["_meta"]["askUserQuestion"], True)
+
+    def test_load_history_does_not_pollute_current_answer_or_tools(self):
+        proc = self.start("success", extra_args=("--resume", "fixture-session"),
+                          env_overlay={"FAKE_GROK_RESUME": "0"})
+        result, _, _ = self.finish(proc)
+        self.assertEqual(result["text"], "你好，ACP。")
+        self.assertFalse(self.tool(self.status(), "historical-tool"))
+        methods = [m.get("method") for m in self.messages()]
+        self.assertIn("session/load", methods)
+        self.assertNotIn("session/resume", methods)
         loaded = next(m for m in self.messages() if m.get("method") == "session/load")
         self.assertIs(loaded["params"]["_meta"]["askUserQuestion"], True)
 
@@ -252,25 +268,39 @@ class BridgeIntegrationTests(unittest.TestCase):
         auth = next(message for message in self.messages() if message.get("method") == "authenticate")
         self.assertEqual(auth["params"]["methodId"], "cached_token")
 
-    def test_model_and_effort_are_applied_before_new_and_resumed_prompts(self):
-        for name, extra, expected_model in (
-            ("new-model", ("--model", "requested-model", "--reasoning-effort", "high"), "requested-model"),
-            ("resume-model", ("--resume", "fixture-session", "--model", "requested-model", "--reasoning-effort", "high"), "requested-model"),
-            ("effort-only", ("--reasoning-effort", "high"), "fixture-model"),
-        ):
+    def test_model_and_effort_use_config_options_when_advertised(self):
+        cases = (
+            ("new-model", ("--model", "requested-model", "--reasoning-effort", "high"),
+             [("model", "requested-model"), ("reasoning_effort", "high")]),
+            ("resume-model", ("--resume", "fixture-session", "--model", "requested-model", "--reasoning-effort", "high"),
+             [("model", "requested-model"), ("reasoning_effort", "high")]),
+            ("effort-only", ("--reasoning-effort", "high"),
+             [("reasoning_effort", "high")]),
+        )
+        for name, extra, expected in cases:
             with self.subTest(name=name):
                 self.run_dir = self.base / name
                 self.trace = self.base / (name + "-trace.jsonl")
                 proc = self.start("success", extra_args=extra)
                 self.finish(proc)
                 messages = self.messages()
-                configured = next(m for m in messages if m.get("method") == "session/set_model")
-                self.assertEqual(configured["params"], {
-                    "sessionId": "fixture-session", "modelId": expected_model,
-                    "_meta": {"reasoningEffort": "high"},
-                })
+                configured = [m for m in messages if m.get("method") == "session/set_config_option"]
+                self.assertEqual([(m["params"]["configId"], m["params"]["value"]) for m in configured], expected)
+                self.assertFalse(any(m.get("method") == "session/set_model" for m in messages))
                 prompt = next(m for m in messages if m.get("method") == "session/prompt")
-                self.assertLess(messages.index(configured), messages.index(prompt))
+                self.assertLess(messages.index(configured[-1]), messages.index(prompt))
+
+    def test_legacy_models_field_uses_set_model(self):
+        proc = self.start("success", extra_args=("--model", "requested-model", "--reasoning-effort", "high"),
+                          env_overlay={"FAKE_GROK_CONFIG_OPTIONS": "0"})
+        self.finish(proc)
+        messages = self.messages()
+        configured = next(m for m in messages if m.get("method") == "session/set_model")
+        self.assertEqual(configured["params"], {
+            "sessionId": "fixture-session", "modelId": "requested-model",
+            "_meta": {"reasoningEffort": "high"},
+        })
+        self.assertFalse(any(m.get("method") == "session/set_config_option" for m in messages))
 
     def test_subagent_tools_are_visible_without_polluting_root_answer(self):
         proc = self.start("subagent")
@@ -299,12 +329,17 @@ class BridgeIntegrationTests(unittest.TestCase):
         events = self.command("events", "--after", "0", "--limit", "100")
         self.assertIn("internal_response", json.dumps(events))
 
-    def test_unknown_duplicate_and_invalid_reload_responses_fail(self):
-        for scenario in ("unknown_response", "duplicate_response", "invalid_reload"):
+    def test_unsolicited_noninteger_receipts_do_not_end_the_turn(self):
+        for scenario, name in (("unknown_response", "unknown"), ("invalid_reload", "invalid")):
             with self.subTest(scenario=scenario):
-                self.run_dir = self.base / scenario.split("_")[0]
-                result, _, _ = self.finish(self.start(scenario), expected=1)
-                self.assertIn("unknown or duplicate response ID", result["error"])
+                self.run_dir = self.base / name
+                result, _, _ = self.finish(self.start(scenario))
+                self.assertEqual(result["text"], "Internal receipt survived.")
+                self.assertEqual(result["stopReason"], "end_turn")
+
+    def test_unknown_integer_response_id_fails(self):
+        result, _, _ = self.finish(self.start("duplicate_response"), expected=1)
+        self.assertIn("unknown or duplicate response ID", result["error"])
 
     def test_incomplete_or_invalid_runs_never_report_success(self):
         for scenario in ("malformed", "early_eof", "non_end_turn", "empty_result"):

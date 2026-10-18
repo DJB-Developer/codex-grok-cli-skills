@@ -14,6 +14,30 @@ pending_id = None
 cancel_received = False
 pending_cancelled = False
 SECRET_SENTINEL = "FAKE_TOKEN_DO_NOT_LEAK_4f7c9e7a"
+CONFIG = {}
+
+
+def reset_config():
+    CONFIG.clear()
+    CONFIG.update({
+        "model": {"id": "model", "name": "Model", "category": "model", "type": "select",
+                  "currentValue": "fixture-model",
+                  "options": [{"value": "fixture-model", "name": "Fixture"},
+                              {"value": "requested-model", "name": "Requested"}]},
+        "reasoning_effort": {"id": "reasoning_effort", "name": "Reasoning Effort",
+                             "category": "thought_level", "type": "select",
+                             "currentValue": "low",
+                             "options": [{"value": "low", "name": "Low"},
+                                         {"value": "high", "name": "High"}]},
+    })
+
+
+def session_payload():
+    payload = {"sessionId": "fixture-session",
+               "models": {"currentModelId": CONFIG["model"]["currentValue"]}}
+    if os.environ.get("FAKE_GROK_CONFIG_OPTIONS", "1") != "0":
+        payload["configOptions"] = [dict(item) for item in CONFIG.values()]
+    return payload
 
 
 def send(message):
@@ -50,10 +74,13 @@ def start_prompt(message):
         result("skills-reload", {"result": {"reloaded": 1}})
         finish("Reload survived.")
         return
-    if scenario in {"unknown_response", "duplicate_response", "invalid_reload"}:
-        response_id = {"unknown_response": "unexpected", "duplicate_response": 1,
-                       "invalid_reload": "skills-reload"}[scenario]
+    if scenario == "duplicate_response":
+        result(1, {})
+        return
+    if scenario in {"unknown_response", "invalid_reload"}:
+        response_id = "unexpected" if scenario == "unknown_response" else "skills-reload"
         result(response_id, {})
+        finish("Internal receipt survived.")
         return
     if scenario == "malformed":
         print("{not-valid-json", flush=True)
@@ -163,14 +190,18 @@ for line in sys.stdin:
         trace.write(json.dumps(message, ensure_ascii=False) + "\n")
     method = message.get("method")
     if method == "initialize":
+        reset_config()
         if message["params"].get("clientCapabilities") != {}:
             send({"jsonrpc": "2.0", "id": message["id"], "error": {
                 "code": -32602, "message": "Fixture rejects unimplemented client capabilities",
             }})
         else:
             advertised = [item for item in os.environ.get("FAKE_GROK_AUTH_METHODS", "cached_token").split(",") if item]
+            capabilities = {"loadSession": True, "promptCapabilities": {"embeddedContext": True}}
+            if os.environ.get("FAKE_GROK_RESUME", "1") != "0":
+                capabilities["sessionCapabilities"] = {"resume": {}, "close": {}}
             result(message["id"], {"protocolVersion": 1,
-                                   "agentCapabilities": {"loadSession": True},
+                                   "agentCapabilities": capabilities,
                                    "authMethods": [{"id": item, "name": item} for item in advertised]})
     elif method == "authenticate":
         result(message["id"], {})
@@ -178,10 +209,26 @@ for line in sys.stdin:
         text_chunk("历史消息，不能出现在本轮答案。")
         update({"sessionUpdate": "tool_call", "toolCallId": "historical-tool",
                 "title": "Historical operation", "kind": "read", "status": "pending"})
-        result(message["id"], {"sessionId": "fixture-session", "models": {"currentModelId": "fixture-model"}})
+        result(message["id"], session_payload())
+    elif method == "session/resume":
+        result(message["id"], session_payload())
     elif method == "session/new":
-        result(message["id"], {"sessionId": "fixture-session", "models": {"currentModelId": "fixture-model"}})
+        result(message["id"], session_payload())
+    elif method == "session/set_config_option":
+        params = message.get("params") or {}
+        config_id = params.get("configId")
+        value = params.get("value")
+        if config_id not in CONFIG or not isinstance(value, str):
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {
+                "code": -32602, "message": "Invalid params",
+            }})
+        else:
+            CONFIG[config_id]["currentValue"] = value
+            result(message["id"], {"configOptions": [dict(item) for item in CONFIG.values()]})
     elif method == "session/set_model":
+        params = message.get("params") or {}
+        if isinstance(params.get("modelId"), str):
+            CONFIG["model"]["currentValue"] = params["modelId"]
         result(message["id"], {})
     elif method == "session/prompt":
         start_prompt(message)

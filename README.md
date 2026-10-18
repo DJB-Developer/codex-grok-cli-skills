@@ -74,4 +74,4 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s codex-cli/tests -v
 
 不使用 skills CLI 时，分别复制 `grok/` 或 `codex-cli/` 的完整目录到技能目录。两个仓库目录都与 `SKILL.md` 的 `name` 一致。
 
-协议版本、真实 CLI 验证范围和交互响应格式见各技能的引用文档。假协议测试、真实 CLI 验证和任务本身的验收是不同证据。
+协议能力以已安装 CLI 的 `--help` 和 ACP `initialize` / session 载荷为准，不要把 Grok 版本号写进 skill。交互响应格式见各技能的引用文档。假协议测试、真实 CLI 验证和任务本身的验收是不同证据。

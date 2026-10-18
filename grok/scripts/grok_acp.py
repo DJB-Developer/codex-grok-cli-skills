@@ -707,16 +707,18 @@ class Bridge(BaseBridge):
     agent_name = "Grok"
 
     def internal_response(self, message):
-        # Grok 1.0.30 can leak its file watcher's internal reload receipt to ACP.
-        # Our RPC IDs are integers; this exact successful receipt owns no waiter.
-        if message.get("id") != "skills-reload" or "error" in message:
+        # Grok has leaked internal receipts onto ACP with non-integer IDs
+        # (observed as skills-reload). Waiter IDs from this bridge are ints.
+        if "error" in message or "result" not in message or type(message.get("id")) is int:
             return False
+        extra = {}
         result = message.get("result")
-        nested = result.get("result") if isinstance(result, dict) else None
-        reloaded = nested.get("reloaded") if isinstance(nested, dict) else None
-        if type(reloaded) is not int or reloaded < 0:
-            return False
-        self.event("internal_response", response_id="skills-reload", reloaded=reloaded)
+        if message.get("id") == "skills-reload" and isinstance(result, dict):
+            nested = result.get("result") if isinstance(result, dict) else None
+            reloaded = nested.get("reloaded") if isinstance(nested, dict) else None
+            if type(reloaded) is int and reloaded >= 0:
+                extra["reloaded"] = reloaded
+        self.event("internal_response", response_id=message.get("id"), **extra)
         return True
 
     def command(self):
@@ -812,6 +814,8 @@ class Bridge(BaseBridge):
             fields = {key: update[key] for key in ("tool_call_id", "kind", "prompt_id", "stop_reason",
                       "error_kind", "usage", "elapsed_ms") if key in update}
             self.event("session_event", session_id=session_id, session_update=kind, **fields)
+        else:
+            self.event("session_event", session_id=session_id, session_update=kind)
 
 
     async def incoming_request(self, message):
@@ -897,55 +901,113 @@ class Bridge(BaseBridge):
         return value
 
 
-    async def conversation(self):
-        timeout = self.args.control_timeout_seconds
-        self.state["state"] = "initializing"
-        self.event("initializing")
-        initialized = await self.rpc("initialize", {"protocolVersion": 1, "clientCapabilities": {}}, timeout)
-        if not isinstance(initialized, dict) or initialized.get("protocolVersion") != 1:
-            raise RuntimeError("Grok did not negotiate ACP protocol version 1")
-        self.event("initialized", agent_info=initialized.get("agentInfo"),
-                   agent_capabilities=initialized.get("agentCapabilities", {}))
-        methods = {m.get("id") for m in initialized.get("authMethods", [])}
+    @staticmethod
+    def advertised(container, key):
+        return isinstance(container, dict) and key in container and container[key] is not None
+
+    @staticmethod
+    def config_by_id(payload):
+        options = payload.get("configOptions") if isinstance(payload, dict) else None
+        if not isinstance(options, list):
+            return None
+        return {item.get("id"): item for item in options
+                if isinstance(item, dict) and isinstance(item.get("id"), str)}
+
+    def select_auth(self, initialized):
+        methods = {m.get("id") for m in initialized.get("authMethods", []) if isinstance(m, dict)}
         api_key_configured = bool(os.environ.get("XAI_API_KEY") or os.environ.get("GROK_CODE_XAI_API_KEY"))
-        auth = self.args.auth_method or ("xai.api_key" if api_key_configured and
-                                          "xai.api_key" in methods else "cached_token")
+        if self.args.auth_method:
+            auth = self.args.auth_method
+        elif api_key_configured and "xai.api_key" in methods:
+            auth = "xai.api_key"
+        elif "cached_token" in methods:
+            auth = "cached_token"
+        else:
+            raise RuntimeError("Grok did not advertise a noninteractive auth method; run grok login or set XAI_API_KEY")
         if auth not in methods:
             raise RuntimeError("Grok does not advertise the selected authentication method: " + auth)
-        self.state["state"] = "authenticating"
-        self.save()
-        await self.rpc("authenticate", {"methodId": auth, "_meta": {"headless": True}}, timeout)
+        return auth
+
+    async def open_session(self, initialized, timeout):
         params = {"cwd": str(Path(self.args.cwd).resolve()), "mcpServers": [],
                   "_meta": {"askUserQuestion": True, "yoloMode": not self.args.ask_permissions}}
         if self.args.reasoning_effort:
             params["_meta"]["reasoningEffort"] = self.args.reasoning_effort
-        self.state["state"] = "creating_session"
-        self.save()
+        if self.args.model:
+            params["_meta"]["modelId"] = self.args.model
+        capabilities = initialized.get("agentCapabilities") or {}
+        session_caps = capabilities.get("sessionCapabilities") if isinstance(capabilities, dict) else {}
         if self.args.resume:
-            if not initialized.get("agentCapabilities", {}).get("loadSession"):
-                raise RuntimeError("Grok does not advertise session/load support")
             params["sessionId"] = self.args.resume
             self.state["session_id"] = self.args.resume
-            created = await self.rpc("session/load", params, timeout)
-            session_id = self.args.resume
-        else:
+            if self.advertised(session_caps, "resume"):
+                created = await self.rpc("session/resume", params, timeout)
+            elif capabilities.get("loadSession"):
+                created = await self.rpc("session/load", params, timeout)
+            else:
+                raise RuntimeError("Grok does not advertise session/resume or session/load")
+            return self.args.resume, created if isinstance(created, dict) else {}
+        created = await self.rpc("session/new", params, timeout)
+        session_id = created.get("sessionId") if isinstance(created, dict) else None
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeError("Grok session/new returned no sessionId")
+        self.state["session_id"] = session_id
+        return session_id, created if isinstance(created, dict) else {}
+
+    async def apply_session_overrides(self, created, session_id, timeout):
+        if not (self.args.model or self.args.reasoning_effort):
+            return
+        by_id = self.config_by_id(created)
+        if by_id is not None:
+            async def set_option(config_id, value):
+                nonlocal by_id
+                if config_id not in by_id:
+                    raise RuntimeError("session has no " + config_id + " config option")
+                result = await self.rpc("session/set_config_option", {
+                    "sessionId": session_id, "configId": config_id, "value": value,
+                }, timeout)
+                updated = self.config_by_id(result)
+                if updated is not None:
+                    by_id = updated
             if self.args.model:
-                params["_meta"]["modelId"] = self.args.model
-            created = await self.rpc("session/new", params, timeout)
-            session_id = created.get("sessionId")
-            if not isinstance(session_id, str) or not session_id:
-                raise RuntimeError("Grok session/new returned no sessionId")
-            self.state["session_id"] = session_id
-        if self.args.model or self.args.reasoning_effort:
-            models = created.get("models", {}) if isinstance(created, dict) else {}
-            model_id = self.args.model or models.get("currentModelId")
-            if not model_id:
-                raise RuntimeError("session response has no currentModelId; cannot safely apply reasoning effort")
-            settings = {"sessionId": session_id, "modelId": model_id}
+                await set_option("model", self.args.model)
             if self.args.reasoning_effort:
-                settings["_meta"] = {"reasoningEffort": self.args.reasoning_effort}
-            await self.rpc("session/set_model", settings, timeout)
-            self.event("session_configured", model_id=model_id, reasoning_effort=self.args.reasoning_effort)
+                await set_option("reasoning_effort", self.args.reasoning_effort)
+            self.event("session_configured", model_id=self.args.model,
+                       reasoning_effort=self.args.reasoning_effort, via="session/set_config_option")
+            return
+        models = created.get("models", {}) if isinstance(created, dict) else {}
+        model_id = self.args.model or models.get("currentModelId")
+        if not model_id:
+            raise RuntimeError("session response has no currentModelId; cannot safely apply reasoning effort")
+        settings = {"sessionId": session_id, "modelId": model_id}
+        if self.args.reasoning_effort:
+            settings["_meta"] = {"reasoningEffort": self.args.reasoning_effort}
+        await self.rpc("session/set_model", settings, timeout)
+        self.event("session_configured", model_id=model_id, reasoning_effort=self.args.reasoning_effort,
+                   via="session/set_model")
+
+    async def conversation(self):
+        timeout = self.args.control_timeout_seconds
+        self.state["state"] = "initializing"
+        self.event("initializing")
+        initialized = await self.rpc("initialize", {
+            "protocolVersion": 1,
+            "clientCapabilities": {},
+            "clientInfo": {"name": "grok-acp-bridge", "title": "Grok ACP bridge", "version": "1"},
+        }, timeout)
+        if not isinstance(initialized, dict) or initialized.get("protocolVersion") != 1:
+            raise RuntimeError("Grok did not negotiate ACP protocol version 1")
+        self.event("initialized", agent_info=initialized.get("agentInfo"),
+                   agent_capabilities=initialized.get("agentCapabilities", {}))
+        auth = self.select_auth(initialized)
+        self.state["state"] = "authenticating"
+        self.save()
+        await self.rpc("authenticate", {"methodId": auth, "_meta": {"headless": True}}, timeout)
+        self.state["state"] = "creating_session"
+        self.save()
+        session_id, created = await self.open_session(initialized, timeout)
+        await self.apply_session_overrides(created, session_id, timeout)
         self.parts.clear()  # A loaded transcript is history, not this turn's answer.
         self.tools.clear()
         self.state["state"] = "running"
@@ -967,7 +1029,8 @@ class Bridge(BaseBridge):
 
 
 def configure_run(parser):
-    parser.add_argument("--auth-method", choices=("cached_token", "xai.api_key"))
+    parser.add_argument("--auth-method",
+                        help="ACP auth method id advertised by initialize")
     parser.add_argument("--ask-permissions", action="store_true",
                         help="request Grok permission callbacks instead of default always-approve")
     parser.add_argument("--grok-bin", default="grok")
